@@ -31,29 +31,39 @@ you're happy with the defaults.
 The :LuaInspect command                                          *:LuaInspect*
 
 You shouldn't need to execute this command manually unless you've disabled
-automatic highlighting using the |g:lua_inspect_automatic| option. When you
-execute the |:LuaInspect| command the plug-in runs LuaInspect and then
-highlights all variables in the current buffer using one of the following
+automatic highlighting using the |g:lua_inspect_events| option. When you
+execute the |:LuaInspect| command the plug-in runs the LuaInspect tool and
+then highlights all variables in the current buffer using one of the following
 highlighting groups:
 
- • 'luaInspectGlobalDefined'
- • 'luaInspectGlobalUndefined'
- • 'luaInspectLocalUnused'
- • 'luaInspectLocalMutated'
- • 'luaInspectUpValue'
- • 'luaInspectParam'
- • 'luaInspectLocal'
- • 'luaInspectFieldDefined'
- • 'luaInspectFieldUndefined'
+ • luaInspectGlobalDefined
+ • luaInspectGlobalUndefined
+ • luaInspectLocalUnused
+ • luaInspectLocalMutated
+ • luaInspectUpValue
+ • luaInspectParam
+ • luaInspectLocal
+ • luaInspectFieldDefined
+ • luaInspectFieldUndefined
+
+If you don't like one or more of the default styles the Vim documentation
+describes how to change them (see |:hi-default| ).
 
 ------------------------------------------------------------------------------
-The g:lua_inspect_automatic option                   *g:lua_inspect_automatic*
+The g:lua_inspect_events option                         *g:lua_inspect_events*
 
 By default semantic highlighting is automatically enabled after a short
-timeout. If you don't want this you can add the following to your |vimrc|
-script:
+timeout and when you save a buffer. If you want to disable automatic
+highlighting altogether add the following to your |vimrc| script:
 >
-    :let g:lua_inspect_automatic = 0
+    :let g:lua_inspect_events = ''
+
+You can also add events, e.g.:
+>
+    :let g:lua_inspect_events = 'CursorHold,CursorHoldI,InsertLeave'
+
+Note that this only works when the plug-in is loaded (or reloaded) after
+setting the |g:lua_inspect_events| option.
 
 ------------------------------------------------------------------------------
 The g:lua_inspect_internal option                     *g:lua_inspect_internal*
@@ -69,12 +79,16 @@ this, you can add the following to your |vimrc| script:
     :let g:lua_inspect_internal = 1
 
 ==============================================================================
-Limitations ~
+Not yet implemented ~
 
-Right now the highlighting styles used by 'luainspect.vim' are the same as
-those used by the SciTE plug-in and they don't work well on dark backgrounds.
-As soon as I get around to picking some alternate colors I'll include those in
-the plug-in.
+ • Right now the highlighting styles used by 'luainspect.vim' are the same as
+   those used by the SciTE plug-in and they don't work well on dark
+   backgrounds. As soon as I get around to picking some alternate colors I'll
+   include those in the plug-in.
+
+ • Bindings for other features of LuaInspect like renaming variables on command
+   and showing tooltips for identifiers. This might be a lot of work but could
+   prove to be really useful in making Lua easy to use in Vim.
 
 ==============================================================================
 Contact ~
@@ -88,7 +102,7 @@ If you like this plug-in please vote for it on www.vim.org [7].
 License ~
 
 This software is licensed under the MIT license [8].
-© 2010 Peter Odding <peter@peterodding.com>.
+© 2010 Peter Odding .
 
 ==============================================================================
 References ~
