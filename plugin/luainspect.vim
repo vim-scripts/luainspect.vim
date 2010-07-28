@@ -1,8 +1,8 @@
 " Vim plug-in
 " Author: Peter Odding <peter@peterodding.com>
-" Last Change: July 27, 2010
+" Last Change: July 28, 2010
 " URL: http://peterodding.com/code/vim/lua-inspect/
-" Version: 0.1.3
+" Version: 0.1.4
 
 " Configuration defaults. {{{1
 
@@ -35,7 +35,7 @@ augroup END
 " Script local functions. {{{1
 
 function! s:AutoEnable()
-  if &filetype == 'lua'
+  if &ft == 'lua' && !&diff
     LuaInspect
   end
 endfunction
@@ -63,7 +63,7 @@ EOF
   " Highlight variables in buffer based on positions.
   for fields in split(listing, "\n")
     let [type, lnum, start, end] = split(fields)
-    let command = 'syntax match %s /\%%%il\%%>%ic.\+\%%<%ic/'
+    let command = 'syntax match %s /\%%%il\%%>%ic\<\w\+\>\%%<%ic/'
     execute printf(command, type, lnum, start - 1, end + 2)
   endfor
 endfunction
@@ -97,7 +97,7 @@ function! s:LoadDefaultStyles()
   " has already defined or linked the highlighting group. This enables color
   " schemes and vimrc scripts to override the styles (see :help :hi-default).
   highlight def link luaInspectGlobalDefined luaInspectDefGlobalDefined
-  highlight def link luaInspectGlobalUndefined Error
+  highlight def link luaInspectGlobalUndefined ErrorMsg
   highlight def link luaInspectLocalUnused luaInspectDefLocalUnused
   highlight def link luaInspectLocalMutated luaInspectDefLocalMutated
   highlight def link luaInspectUpValue luaInspectDefUpValue
