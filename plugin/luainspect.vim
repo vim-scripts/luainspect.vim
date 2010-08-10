@@ -1,8 +1,8 @@
 " Vim plug-in
 " Author: Peter Odding <peter@peterodding.com>
-" Last Change: August 8, 2010
+" Last Change: August 10, 2010
 " URL: http://peterodding.com/code/vim/lua-inspect/
-" Version: 0.2.1
+" Version: 0.2.2
 " License: MIT
 
 " Don't source the plug-in when its already been loaded or &compatible is set.
@@ -15,6 +15,15 @@ endif
 if !exists('g:lua_inspect_events')
   " Change this to enable semantic highlighting on your preferred events.
   let g:lua_inspect_events = 'CursorHold,CursorHoldI,BufWritePost'
+endif
+
+if !exists('g:lua_inspect_path')
+  " Change this if you want to move the Lua modules somewhere else.
+  if has('win32') || has('win64')
+    let g:lua_inspect_path = '~\vimfiles\misc\luainspect'
+  else
+    let g:lua_inspect_path = '~/.vim/misc/luainspect'
+  endif
 endif
 
 if !exists('g:lua_inspect_internal')
@@ -42,95 +51,95 @@ let s:groups['SelectedVariable'] = 'Folded'
 
 " (Automatic) command definitions. {{{1
 
-command! -bar -bang LuaInspect call s:RunLuaInspect(<q-bang> == '!')
+command! -bar -bang LuaInspect call s:run_lua_inspect(<q-bang> != '!')
 
 augroup PluginLuaInspect
   " Clear existing automatic commands.
-  autocmd! 
+  autocmd!
+  " Disable easytags.vim because it doesn't play nice with luainspect.vim!
+  autocmd BufReadPost * if s:check_plugin_enabled() | let b:easytags_nohl = 1 | endif
   " Define the configured automatic commands.
   for s:event in split(g:lua_inspect_events, ',')
-    execute 'autocmd' s:event '* call s:AutoEnable()'
+    execute 'autocmd' s:event '* if s:check_plugin_enabled() | LuaInspect | endif'
   endfor
 augroup END
 
 " Script local functions. {{{1
 
-function! s:AutoEnable() " {{{2
-  if &ft == 'lua' && !&diff && !exists('b:luainspect_disabled')
-    LuaInspect
-  end
+function! s:check_plugin_enabled()
+  return &ft == 'lua' && !&diff && !exists('b:luainspect_disabled')
 endfunction
 
-function! s:RunLuaInspect(disable) " {{{2
-  if a:disable
-    call s:ClearPreviousMatches()
+function! s:run_lua_inspect(enabled) " {{{2
+  if s:set_plugin_enabled(a:enabled)
+    let lines = getline(1, "$")
+    call insert(lines, col('.'))
+    call insert(lines, line('.'))
+    call s:parse_text(join(lines, "\n"), s:prepare_search_path())
+    call s:define_default_styles()
+    call s:clear_previous_matches()
+    call s:highlight_variables()
+  endif
+endfunction
+
+function! s:set_plugin_enabled(enabled) " {{{2
+  if a:enabled
+    unlet! b:luainspect_disabled
+    return 1
+  else
+    call s:clear_previous_matches()
     unlet! b:luainspect_input b:luainspect_output
     let b:luainspect_disabled = 1
-    return
-  else
-    unlet! b:luainspect_disabled
+    return 0
   endif
-  let lines = getline(1, "$")
-  call insert(lines, col('.'))
-  call insert(lines, line('.'))
-  let l:input = join(lines, "\n")
-  " Don't parse the text when it hasn't been changed.
-  if !(exists('b:luainspect_input') && b:luainspect_input == l:input)
+endfunction
+
+function! s:prepare_search_path() " {{{2
+  let code = ''
+  if !(has('lua') && g:lua_inspect_internal && exists('s:changed_path'))
+    let template = 'package.path = ''%s/?.lua;'' .. package.path'
+    let code = printf(template, escape(expand(g:lua_inspect_path), '"\'))
+    if has('lua') && g:lua_inspect_internal
+      execute 'lua' code
+      let s:changed_path = 1
+    endif
+  endif
+  return code
+endfunction
+
+function! s:parse_text(input, search_path) " {{{2
+  if !(exists('b:luainspect_input') && b:luainspect_input == a:input)
     if !(has('lua') && g:lua_inspect_internal)
-      " Run LuaInspect as an external program.
-      let b:luainspect_output = system("lua -e 'require\"luainspect4vim\" (io.read \"*a\")'", l:input)
+      let template = 'lua -e "%s; require ''luainspect4vim'' (io.read ''*a'')"'
+      let command = printf(template, a:search_path)
+      try
+        let b:luainspect_output = xolox#shell#execute(command, 1, a:input)
+      catch /^Vim\%((\a\+)\)\=:E117/
+        " Ignore missing shell.vim plug-in.
+        let b:luainspect_output = split(system(command, a:input), "\n")
+        if v:shell_error
+          let msg = "Failed to execute lua-inspect as external process! %s"
+          throw printf(msg, strtrans(join(b:luainspect_output, "\n")))
+        endif
+      endtry
     else
-      " Run LuaInspect using the Lua interface for Vim.
-      redir => b:luainspect_output
+      redir => output
       silent lua << EOF
       if io == nil then
         -- The Lua interface for Vim previously didn't include io.*!
         io = { type = function() end }
       end
-      require 'luainspect4vim' (vim.eval 'l:input')
+      require 'luainspect4vim' (vim.eval 'a:input')
 EOF
       redir END
+      let b:luainspect_output = split(output, "\n")
     endif
     " Remember the text that was just parsed.
-    let b:luainspect_input = l:input
+    let b:luainspect_input = a:input
   endif
-  " Clear previously created highlighting.
-  call s:LoadDefaultStyles()
-  call s:ClearPreviousMatches()
-  " Highlight variables in buffer based on positions.
-  let did_warning = 0
-  for line in split(b:luainspect_output, "\n")
-    let fields = split(line)
-    if len(fields) != 4
-      if !did_warning
-        try
-          echohl WarningMsg
-          echomsg "Invalid output from luainspect4vim.lua:"
-        finally
-          echohl None
-          let did_warning = 1
-        endtry
-      endif
-      echomsg strtrans(line)
-    else
-      let [type, lnum, start, end] = fields
-      let command = 'syntax match %s /\%%%il\%%>%ic\<\w\+\>\%%<%ic/'
-      execute printf(command, type, lnum, start - 1, end + 2)
-    endif
-  endfor
 endfunction
 
-function! s:ClearPreviousMatches() " {{{2
-  " Clear existing highlighting.
-  for group in keys(s:groups)
-    let group = 'luaInspect' . group
-    if hlexists(group)
-      execute 'syntax clear' group
-    endif
-  endfor
-endfunction
-
-function! s:LoadDefaultStyles() " {{{2
+function! s:define_default_styles() " {{{2
   " Always define the default highlighting styles
   " (copied from /luainspect/scite.lua for consistency).
   " TODO Consider the &background?
@@ -145,6 +154,38 @@ function! s:LoadDefaultStyles() " {{{2
     " has already defined or linked the highlighting group. This enables color
     " schemes and vimrc scripts to override the styles (see :help :hi-default).
     execute 'highlight def link' group defgroup
+  endfor
+endfunction
+
+function! s:clear_previous_matches() " {{{2
+  " Clear existing highlighting.
+  for group in keys(s:groups)
+    let group = 'luaInspect' . group
+    if hlexists(group)
+      execute 'syntax clear' group
+    endif
+  endfor
+endfunction
+
+function! s:highlight_variables() " {{{2
+  let did_warning = 0
+  for line in b:luainspect_output
+    if match(line, '^\w\+\(\s\+\d\+\)\{3}$') == -1
+      if !did_warning
+        try
+          echohl WarningMsg
+          echomsg "Invalid output from luainspect4vim.lua:"
+        finally
+          echohl None
+          let did_warning = 1
+        endtry
+      endif
+      echomsg strtrans(line)
+    else
+      let [type, lnum, start, end] = split(line)
+      let syntax_cmd = 'syntax match %s /\%%%il\%%>%ic\<\w\+\>\%%<%ic/'
+      execute printf(syntax_cmd, type, lnum, start - 1, end + 2)
+    endif
   endfor
 endfunction
 
