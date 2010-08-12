@@ -19,6 +19,10 @@ following features are currently supported:
    all occurrences of the variable will be marked in the style of Vim's
    cursorline option (see |'cursorline'|).
 
+ • When luainspect reports a wrong argument count for a function call the call
+   will be highlighted with a green underline. When you hover over the
+   highlighted text a tooltip shows the associated warning message.
+
  • When a syntax error is found (during highlighting or using the rename
    functionality) the lines where the error is reported will be marked like a
    spelling error.
@@ -64,6 +68,7 @@ current buffer using one of the following highlighting groups:
  • luaInspectFieldDefined
  • luaInspectFieldUndefined
  • luaInspectSelectedVariable
+ • luaInspectWrongArgCount
  • luaInspectSyntaxError
 
 If you don't like one or more of the default styles the Vim documentation

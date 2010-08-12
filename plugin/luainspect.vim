@@ -1,8 +1,8 @@
 " Vim plug-in
 " Author: Peter Odding <peter@peterodding.com>
-" Last Change: August 11, 2010
+" Last Change: August 12, 2010
 " URL: http://peterodding.com/code/vim/lua-inspect/
-" Version: 0.3.3
+" Version: 0.3.6
 " License: MIT
 
 " Support for automatic update using the GLVS plug-in.
@@ -50,8 +50,9 @@ let s:groups['Param'] = 'guifg=#000040'
 let s:groups['Local'] = 'guifg=#000080'
 let s:groups['FieldDefined'] = 'guifg=#600000'
 let s:groups['FieldUndefined'] = 'guifg=#c00000'
-let s:groups['SelectedVariable'] = 'Folded'
+let s:groups['SelectedVariable'] = 'CursorLine'
 let s:groups['SyntaxError'] = 'SpellBad'
+let s:groups['WrongArgCount'] = 'SpellLocal'
 
 " (Automatic) command definitions. {{{1
 
@@ -86,7 +87,11 @@ endfunction
 
 function! LuaInspectToolTip() " {{{2
   let text = s:run_lua_inspect('tooltip', 0, 1)
-  return type(text) == type('') ? text : ''
+  if exists('b:luainspect_syntax_error')
+    return b:luainspect_syntax_error
+  else
+    return type(text) == type('') ? text : ''
+  endif
 endfunction
 
 function! s:run_lua_inspect(action, toggle, enabled) " {{{2
@@ -107,12 +112,14 @@ function! s:run_lua_inspect(action, toggle, enabled) " {{{2
         let linenum = b:luainspect_output[1] + 0
         let colnum = b:luainspect_output[2] + 0
         let linenum2 = b:luainspect_output[3] + 0
-        " TODO Can we do something useful with this?!
-        " let message = b:luainspect_output[4]
+        let b:luainspect_syntax_error = b:luainspect_output[4]
         let error_cmd = 'syntax match luaInspectSyntaxError /\%%>%il\%%<%il.*/ containedin=ALLBUT,lua*Comment*'
         execute printf(error_cmd, linenum - 1, (linenum2 ? linenum2 : line('$')) + 1)
+        call xolox#warning("Syntax error around line %i: %s", linenum, b:luainspect_syntax_error)
         return
-      elseif response == 'highlight'
+      endif
+      unlet! b:luainspect_syntax_error
+      if response == 'highlight'
         call s:define_default_styles()
         call s:clear_previous_matches()
         call s:highlight_variables()
@@ -226,11 +233,18 @@ function! s:clear_previous_matches() " {{{2
 endfunction
 
 function! s:highlight_variables() " {{{2
+  call clearmatches()
   for line in b:luainspect_output[1:-1]
     if s:check_output(line, '^\w\+\(\s\+\d\+\)\{3}$')
-      let [hlgroup, linenum, firstcol, lastcol] = split(line)
+      let [group, linenum, firstcol, lastcol] = split(line)
       let pattern = s:highlight_position(linenum + 0, firstcol - 1, lastcol + 2)
-      execute 'syntax match' hlgroup '/' . pattern . '/'
+      if group == 'luaInspectWarning'
+        call matchadd(group, pattern)
+      elseif group == 'luaInspectSelectedVariable' 
+        call matchadd(group, pattern, 20)
+      else
+        execute 'syntax match' group '/' . pattern . '/'
+      endif
     endif
   endfor
 endfunction
