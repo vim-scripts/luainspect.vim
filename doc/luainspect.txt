@@ -19,9 +19,12 @@ following features are currently supported:
    all occurrences of the variable will be marked in the style of Vim's
    cursorline option (see |'cursorline'|).
 
- • When luainspect reports a wrong argument count for a function call the call
+ • When luainspect reports a wrong argument count for a function call the text
    will be highlighted with a green underline. When you hover over the
    highlighted text a tooltip shows the associated warning message.
+
+ • When LuaInspect reports warnings about unused variables, wrong argument
+   counts, etc. they are shown in a location list window (see |location-list|).
 
  • When a syntax error is found (during highlighting or using the rename
    functionality) the lines where the error is reported will be marked like a
@@ -85,6 +88,15 @@ This variable isn't really an option but if you want to avoid loading the
 script:
 >
     :let g:loaded_luainspect = 1
+
+------------------------------------------------------------------------------
+The *g:lua_inspect_warnings* option
+
+When LuaInspect reports warnings about unused variables, wrong argument
+counts, etc. they are automatically shown in a location list window (see
+|location-list|). If you don't like this add the following to your |vimrc| script:
+>
+    :let g:lua_inspect_warnings = 0
 
 ------------------------------------------------------------------------------
 The *g:lua_inspect_events* option
