@@ -1,6 +1,6 @@
 " Vim script.
 " Author: Peter Odding <peter@peterodding.com>
-" Last Change: August 15, 2010
+" Last Change: August 16, 2010
 " URL: http://peterodding.com/code/vim/lua-inspect/
 " License: MIT
 
@@ -132,6 +132,8 @@ function! s:parse_text(input, search_path) " {{{1
           throw printf(msg, strtrans(join(b:luainspect_output, "\n")))
         endif
       endtry
+      let message_filter = '^\(status\|warning\):'
+      call filter(b:luainspect_output, 'v:val !~ message_filter')
     else
       redir => output
       silent lua require 'luainspect4vim' (vim.eval 'a:input')
@@ -251,7 +253,7 @@ function! s:rename_variable() " {{{1
   " Clear highlighting of occurrences.
   call map(highlights, 'matchdelete(v:val)')
   " Perform rename?
-  if newname != '' && newname != oldname
+  if newname != '' && newname !=# oldname
     let num_renamed = 0
     for fields in reverse(b:luainspect_output[1:-1])
       let [linenum, firstcol, lastcol] = split(fields)
