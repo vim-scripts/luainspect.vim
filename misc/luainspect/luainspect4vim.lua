@@ -3,7 +3,7 @@
  This module is part of the luainspect.vim plug-in for the Vim text editor.
 
  Author: Peter Odding <peter@peterodding.com>
- Last Change: August 16, 2010
+ Last Change: August 19, 2010
  URL: http://peterodding.com/code/vim/lua-inspect/
  License: MIT
 
@@ -11,6 +11,7 @@
 
 local LI = require 'luainspect.init'
 local LA = require 'luainspect.ast'
+local LT = require 'luainspect.types'
 local MAX_PREVIEW_KEYS = 20
 local actions = {}
 local myprint
@@ -37,12 +38,6 @@ local function getcurvar(tokenlist, line, column) -- {{{1
   end
 end
 
-local function knownvarorfield(token) -- {{{1
-  local a = token.ast
-  local v = a.seevalue or a
-  return a.definedglobal or v.valueknown and v.value ~= nil
-end
-
 function actions.highlight(tokenlist, line, column, src) -- {{{1
   local function dump(token, hlgroup)
     local l1, c1 = unpack(token.ast.lineinfo.first, 1, 2)
@@ -62,10 +57,21 @@ function actions.highlight(tokenlist, line, column, src) -- {{{1
     if curvar and curvar.ast.id == token.ast.id then
       dump(token, 'luaInspectSelectedVariable')
     end
-    if token.ast.note and token.ast.note:find '[Tt]oo%s+%w+%s+arguments' then
-      local l1, c1 = unpack(token.ast.lineinfo.first, 1, 2)
-      local l2, c2 = unpack(token.ast.lineinfo.last, 1, 2)
-      dump(token, 'luaInspectWrongArgCount')
+    local ast = token.ast
+    if ast and (ast.seevalue or ast).note then
+      local hast = ast.seevalue or ast
+      if hast.tag == 'Call' then
+        hast = hast[1]
+      elseif hast.tag == 'Invoke' then
+        hast = hast[2]
+      end
+      local fpos, lpos = LA.ast_pos_range(hast, tokenlist)
+      local l1, c1 = LA.pos_to_linecol(fpos, src)
+      local l2, c2 = LA.pos_to_linecol(lpos, src)
+      -- TODO: A bit confusing is that LuaInspect seems to emit both zero-based
+      -- and one-based column numbers (i.e. offsets vs. indices) since the
+      -- included Metalua lexer was patched to fix a rare bug.
+      myprint(('luaInspectWrongArgCount %i %i %i %i'):format(l1, c1 - 1, l2, c2 - 1))
     end
     if token.tag == 'Id' then
       if not token.ast.localdefinition then
@@ -82,7 +88,12 @@ function actions.highlight(tokenlist, line, column, src) -- {{{1
         dump(token, 'luaInspectLocal')
       end
     elseif token.ast.isfield then
-      dump(token, knownvarorfield(token) and 'luaInspectFieldDefined' or 'luaInspectFieldUndefined')
+      local a = token.ast
+      if a.definedglobal or not LT.istype[a.seevalue.value] and a.seevalue.value ~= nil then
+        dump(token, 'luaInspectFieldDefined')
+      else
+        dump(token, 'luaInspectFieldUndefined')
+      end
     end
   end
 end
@@ -113,46 +124,28 @@ local function previewtable(ast) -- {{{1
 end
 
 function actions.tooltip(tokenlist, line, column, src) -- {{{1
-  local did_details = false
-  local note
   for i, token in ipairs(tokenlist) do
     local ast = token.ast
     if ast.lineinfo then
       local l1, c1 = unpack(ast.lineinfo.first, 1, 2)
       local l2, c2 = unpack(ast.lineinfo.last, 1, 2)
       if l1 == line then
-        if column >= c1 and column <= c2 then
-          if ast.id and not did_details then
-            local details = LI.get_value_details(ast, tokenlist, src)
-            if details ~= '?' then
-              -- Convert variable type to readable sentence (friendlier to new users IMHO).
-              details = details:gsub('^[^\n]+', function(vartype)
-                vartype = vartype:match '^%s*(.-)%s*$'
-                if vartype:find 'local$' or vartype:find 'global' then
-                  vartype = vartype .. ' ' .. 'variable'
-                end
-                local article = details:find '^[aeiou]' and 'an' or 'a'
-                return "This is " .. article .. ' ' .. vartype .. '.'
-              end)
-              myprint(details)
-            end
-            previewtable(ast)
-            if note then
-              myprint(note)
-              break
-            end
+        if column >= c1 and column <= c2 and ast.id then
+          local details = LI.get_value_details(ast, tokenlist, src)
+          if details ~= '?' then
+            -- Convert variable type to readable sentence (friendlier to new users IMHO).
+            details = details:gsub('^[^\n]+', function(vartype)
+              vartype = vartype:match '^%s*(.-)%s*$'
+              if vartype:find 'local$' or vartype:find 'global' then
+                vartype = vartype .. ' ' .. 'variable'
+              end
+              local article = details:find '^[aeiou]' and 'an' or 'a'
+              return "This is " .. article .. ' ' .. vartype .. '.'
+            end)
+            myprint(details)
           end
-          if ast.note then
-            -- This is complicated by the fact that I don't really understand
-            -- the Metalua/LuaInspect abstract syntax tree and apparently notes
-            -- are not always available on the identifier token printed above.
-            local iswarning = ast.note:find '[Tt]oo%s+%w+%s+arguments'
-            note = (iswarning and "Warning: " or "Note: ") .. ast.note
-            if did_details then
-              myprint(note)
-              break
-            end
-          end
+          previewtable(ast)
+          break
         end
       end
     end
@@ -189,7 +182,8 @@ return function(src)
   local action, file, line, column
   action, file, line, column, src = src:match '^(%S+)\n([^\n]+)\n(%d+)\n(%d+)\n(.*)$'
   line = tonumber(line)
-  column = tonumber(column)
+  -- This adjustment was found by trial and error :-|
+  column = tonumber(column) - 1
   src = LA.remove_shebang(src)
   -- Quickly parse the source code using loadstring() to check for syntax errors.
   local f, err, linenum, colnum, linenum2 = LA.loadstring(src)

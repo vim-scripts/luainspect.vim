@@ -39,6 +39,7 @@ local CPATH_APPEND = scite_GetProp('luainspect.cpath.append', '')
 
 local LI = require "luainspect.init"
 local LA = require "luainspect.ast"
+local T = require "luainspect.types"
 
 local M = {}
 
@@ -160,7 +161,8 @@ local INDICATOR_AUTOCOMPLETE = 4
 local INDICATOR_MASKED = 5
 -- Indicator for warnings.
 local INDICATOR_WARNING = 6
-
+-- Indicator for dead-code
+local INDICATOR_DEADCODE = 7
 
 -- Display annotations.
 -- Used for ANNOTATE_ALL_LOCALS feature.
@@ -185,6 +187,11 @@ local function annotate_all_locals()
     end
   end
 end
+
+
+-- Warning/status reporting function.
+-- CATEGORY: SciTE GUI + reporting + AST
+local report = print
 
 
 -- Attempt to update AST from editor text and apply decorations.
@@ -243,7 +250,7 @@ local function update_ast()
     else
       local tokenlist = ast and LA.ast_to_tokenlist(ast, compilesrc)
         -- note: ast nil if whitespace
-      --LA.dump_tokenlist(tokenlist)
+      --print(LA.dump_tokenlist(tokenlist))
       
    
       buffer.src = newsrc
@@ -270,7 +277,7 @@ local function update_ast()
 
         if not(old_type == 'comment' or old_type == 'whitespace') then
           LI.uninspect(buffer.ast)
-          LI.inspect(buffer.ast, buffer.tokenlist) --IMPROVE: don't do full inspection
+          LI.inspect(buffer.ast, buffer.tokenlist, report) --IMPROVE: don't do full inspection
         end
       else --full
         -- old(FIX-REMOVE?): careful: if `buffer.tokenlist` variable exists in `newsrc`, then
@@ -279,7 +286,7 @@ local function update_ast()
       
         buffer.tokenlist = tokenlist
         buffer.ast = ast
-        LI.inspect(buffer.ast, buffer.tokenlist)
+        LI.inspect(buffer.ast, buffer.tokenlist, report)
       end
       if LUAINSPECT_DEBUG then
         DEBUG(LA.dump_tokenlist(buffer.tokenlist))
@@ -547,7 +554,7 @@ scite_OnUpdateUI(function()
     if lpos < fpos then fpos, lpos = lpos, fpos end -- swap
     fpos, lpos = fpos + 1, lpos + 1 - 1
     local match1_ast, match1_comment, iswhitespace =
-      LA.smallest_ast_in_range(buffer.ast, buffer.tokenlist, buffer.src, fpos, lpos)
+      LA.smallest_ast_containing_range(buffer.ast, buffer.tokenlist, buffer.src, fpos, lpos)
     -- DEBUG('m', match1_ast and match1_ast.tag, match1_comment, iswhitespace)
 
     -- Find and highlight.
@@ -700,7 +707,7 @@ local function OnStyle(styler)
           end
         end
       elseif ast.isfield then -- implies token.tag == 'String'
-        if ast.definedglobal or ast.seevalue.valueknown and ast.seevalue.value ~= nil then
+        if ast.definedglobal or not T.istype[ast.seevalue.value] and ast.seevalue.value ~= nil then
           styler:SetState(S_FIELD_RECOGNIZED)
         else
           styler:SetState(S_FIELD)
@@ -720,7 +727,7 @@ local function OnStyle(styler)
       styler:SetState(S_DEFAULT)
     end
     styler:Forward()
-    i = i + 1
+    i = i + #styler:Current()  -- support Unicode
   end
   styler:EndStyling()  
 
@@ -730,9 +737,13 @@ local function OnStyle(styler)
   editor.IndicFore[INDICATOR_MASKING] = 0x0000ff
   editor.IndicStyle[INDICATOR_WARNING] = INDIC_SQUIGGLE  -- IMPROVE: combine with above?
   editor.IndicFore[INDICATOR_WARNING] = 0x008080
+  editor.IndicStyle[INDICATOR_DEADCODE] = INDIC_DIAGONAL  -- IMPROVE: combine with above?
+  editor.IndicFore[INDICATOR_DEADCODE] = 0x808080
   editor.IndicatorCurrent = INDICATOR_MASKING
   editor:IndicatorClearRange(0, editor.Length)
   editor.IndicatorCurrent = INDICATOR_WARNING
+  editor:IndicatorClearRange(0, editor.Length)
+  editor.IndicatorCurrent = INDICATOR_DEADCODE
   editor:IndicatorClearRange(0, editor.Length)
   local tokenlist = buffer.tokenlist
   for idx=1,#tokenlist do
@@ -748,6 +759,11 @@ local function OnStyle(styler)
         -- note: for calls only highlight function name
       local fpos, lpos = LA.ast_pos_range(hast, buffer.tokenlist)
       editor.IndicatorCurrent = INDICATOR_WARNING
+      editor:IndicatorFillRange(fpos-1, lpos-fpos+1)
+    end
+    if ast and ast.isdead then
+      local fpos, lpos = LA.ast_pos_range(ast, buffer.tokenlist)
+      editor.IndicatorCurrent = INDICATOR_DEADCODE
       editor:IndicatorFillRange(fpos-1, lpos-fpos+1)
     end
   end
@@ -855,7 +871,7 @@ local function get_prefixexp(pos0)
     local fpos0 = editor:WordStartPosition(pos0, true)
     local word = editor:textrange(fpos0,pos0)
     table.insert(ids, 1, word)
-    local c = string.char(editor.CharAt[fpos0-1])
+    local c = editor:textrange(fpos0-1, fpos0)
     pos0 = fpos0-1
   until c ~= '.' and c ~= ':'
   return ids
@@ -866,7 +882,7 @@ end
 -- CATEGORY: SciTE command and (dual use) helper
 function M.autocomplete_variable(_, minchars)
   local lpos0 = editor.CurrentPos
-  local c = string.char(editor.CharAt[lpos0-1])
+  local c = editor:textrange(lpos0-1, lpos0)
   if c == '(' then -- function arguments
     local ids = get_prefixexp(lpos0-1)
     if ids[1] ~= '' then
@@ -929,13 +945,21 @@ if AUTOCOMPLETE_VARS or AUTOCOMPLETE_SYNTAX then
 end
 
 
--- key codes (IMPROVE? may be Windows specific)
-local KEY_UP = 38
-local KEY_DOWN = 40
-local KEY_LEFT = 37
-local KEY_RIGHT = 39
-local KEY_ENTER = 13
-
+-- key codes
+local KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER
+if scite_GetProp('PLAT_GTK') then
+  KEY_UP = 65365
+  KEY_DOWN = 65364
+  KEY_LEFT = 65361
+  KEY_RIGHT = 65363
+  KEY_ENTER = 65293
+else -- Windows
+  KEY_UP = 38
+  KEY_DOWN = 40
+  KEY_LEFT = 37
+  KEY_RIGHT = 39
+  KEY_ENTER = 13
+end
 
 -- CATEGORY: SciTE ExtMan event handler
 scite_OnKey(function(key)
@@ -1102,8 +1126,8 @@ function M.inspect_variable_contents()
 
   local iast = ast.seevalue or ast
 
-  if not iast.valueknown then
-    scite_UserListShow({"value unknown"})
+  if T.istype[iast.value] then
+    scite_UserListShow({"value " .. tostring(iast.value)})
   else
     inspect_value(iast.value)
   end
@@ -1147,7 +1171,7 @@ function M.force_reinspect()
     LI.uninspect(buffer.ast)
     LI.clear_cache()
     collectgarbage() -- note package.loaded was given weak keys.
-    LI.inspect(buffer.ast, buffer.tokenlist)
+    LI.inspect(buffer.ast, buffer.tokenlist, report)
   end
 end
 --IMPROVE? possibly should reparse AST as well in case AST got corrupted.

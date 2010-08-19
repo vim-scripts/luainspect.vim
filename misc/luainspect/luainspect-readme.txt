@@ -36,6 +36,9 @@ features could be added too.
         * evaluate special comments (prefixed by '!') to inject semantic information into analysis
            (similar to luaanalyze / lint).
         * basic type inferences (e.g. number + number -> number)
+	* infer function return values (e.g. `function f(x) if x then return 1,2,3 else return 1,3,'z' end end`
+	   returns 1, number, unknown).
+	* detect dead-code (e.g. `do return end dead()`) (SciTE only) (diagonal hatching)
     * refactoring:
         * command to rename all occurrences of selected variable (SciTE only)
     * browsing:
@@ -51,6 +54,10 @@ features could be added too.
 metalualib/* - Copy of Metalua libraries under here
 luainspectlib/* - LuaInspect libraries under here
 htmllib/* - HTML resources under here
+
+Note: the metalualib contains this version of metalua:
+  http://github.com/fab13n/metalua/tree/fcee97b8d0091ceb471902ee457dbccaab98234e
+with a few bug fixes (search for "PATCHED:LuaInspect" in the source)
 
 == Command-line Usage (HTML output) ==
 
@@ -133,12 +140,38 @@ Fabien Fleutot for Metalua and discussions.
 SciTE suggestions/fixes by Tymur Gubayev.
 Peter Odding for VIM editor support [2]
 
+== Bugs ==
+
+Please report bugs via github <http://github.com/davidm/lua-inspect/issues>
+or just "dee em dot el you ae at em ae tee ayche two dot ow ar gee", or
+if you prefer neither, append to the wiki page
+<http://lua-users.org/wiki/LuaInspect>.
+
 == References ==
 
 [1] http://www.scintilla.org/SciTE.html
 [2] http://peterodding.com/code/vim/lua-inspect/ - VIM editor support
 
 == Changes ==
+
+20100818
+  [!] HTML: fix missing chars at end-of-file
+  [!] Metalua: fix lexer line number count off-by-one error
+  [!] SciTE: fix Unicode/UTF-8 encoding breaking formatting
+  [!] core: fix performance problem with tinsertlist function
+  [!] core/performance: cleanup invalidated_code function
+
+20100817
+  [!] core: fix keyword token recognition problems
+  [!] core: skip inspection on require loops
+  [+] core: infer function return values (temporarily disabled)
+  [+] core: detect dead-code (temporarily disabled)
+  [*] core: internal refactoring (ast.valueknown)
+
+20100816
+  core: make reporting optional
+  metalua: patches to metalua lineinfo
+    (was corrupting HTML output and SciTE highlighting)
 
 20100814
   core: add basic type inferences (e.g. number+number -> number)

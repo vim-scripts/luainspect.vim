@@ -194,8 +194,9 @@ end  -- differs from longest_prefix only on line [*]
 
 
 -- Determines AST node that must be re-evaluated upon changing code string from
--- `src` to `bsrc`, given previous AST `top_ast` and tokenlist `tokenlist` corresponding to `src`.
--- note: decorates ast1 as side-effect
+-- `src` to `bsrc`, given previous top_ast/tokenlist/src.
+-- Note: decorates top_ast as side-effect.
+-- If preserve is true, then does not expand AST match even if replacement is invalid.
 -- CATEGORY: AST/tokenlist manipulation
 function M.invalidated_code(top_ast, tokenlist, src, bsrc, preserve)
   -- Converts posiiton range in src to position range in bsrc.
@@ -207,64 +208,74 @@ function M.invalidated_code(top_ast, tokenlist, src, bsrc, preserve)
   end
 
   if src == bsrc then return end -- up-to-date
-  
+
+  -- Find range of positions in src that differences correspond to.
+  -- Note: for zero byte range, src_pos2 = src_pos1 - 1.
   local npre = longest_prefix(src, bsrc)
   local npost = math.min(#src-npre, longest_postfix(src, bsrc))
-    -- note: min to avoid overlap ambiguity
-    
-  -- Find range of positions in src that differences correspond to.
-  -- note: for zero byte range, src_pos2 = src_pos1 - 1.
+      -- note: min avoids overlap ambiguity
   local src_fpos, src_lpos = 1 + npre, #src - npost
   
-  -- Find smallest AST node in ast containing src range above,
-  -- optionally contained comment or whitespace
+  -- Find smallest AST node containing src range above.  May also
+  -- be contained in (smaller) comment or whitespace.
   local match_ast, match_comment, iswhitespace =
-      M.smallest_ast_in_range(top_ast, tokenlist, src, src_fpos, src_lpos)
-
+      M.smallest_ast_containing_range(top_ast, tokenlist, src, src_fpos, src_lpos)
   DEBUG('invalidate-smallest:', match_ast and (match_ast.tag or 'notag'), match_comment, iswhitespace)
 
+  -- Determine which (ast, comment, or whitespace) to match, and get its pos range in src and bsrc.
+  local srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, mast, mtype
   if iswhitespace then
-    local bsrc_fpos, bsrc_lpos = range_transform(src_fpos, src_lpos)
-    if preserve then
-      return src_fpos, src_lpos, bsrc_fpos, bsrc_lpos, nil, 'whitespace'
-    end
-    if bsrc:sub(bsrc_fpos, bsrc_lpos):match'^%s*$' then -- whitespace replaced with whitespace
-      if not bsrc:sub(bsrc_fpos-1, bsrc_lpos+1):match'%s' then
-        DEBUG('edit:white-space-eliminated')
-        -- whitespace eliminated, continue
-      else
-        return src_fpos, src_lpos, bsrc_fpos, bsrc_lpos, nil, 'whitespace'
-      end
-    end -- else continue
+    mast, mtype = nil, 'whitespace'
+    srcm_fpos, srcm_lpos = src_fpos, src_lpos
   elseif match_comment then
-    local srcm_fpos, srcm_lpos = match_comment.fpos, match_comment.lpos
-    local bsrcm_fpos, bsrcm_lpos = range_transform(srcm_fpos, srcm_lpos)
-    if preserve then
-      return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, match_comment, 'comment'
-    end
-    -- If new text is not a single comment, then invalidate containing statementblock instead.
-    local m2src = bsrc:sub(bsrcm_fpos, bsrcm_lpos)
-    DEBUG('inc-compile-comment[' .. m2src .. ']')
-    if quick_parse_comment(m2src) then  -- comment replaced with comment
-      return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, match_comment, 'comment'
-    end -- else continue
-  else -- statementblock modified
-    match_ast = M.get_containing_statementblock(match_ast, top_ast)
-    local srcm_fpos, srcm_lpos = M.ast_pos_range(match_ast, tokenlist)
-    local bsrcm_fpos, bsrc_lpos = range_transform(srcm_fpos, srcm_lpos)
-    if preserve then
-      return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrc_lpos, match_ast, 'statblock'
-    end
-    local m2src = bsrc:sub(bsrcm_fpos, bsrc_lpos)
-    DEBUG('inc-compile-statblock:', match_ast and match_ast.tag, '[' .. m2src .. ']')
-    if loadstring(m2src) then -- statementblock replaced with statementblock 
-      return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrc_lpos, match_ast, 'statblock'
-    end -- else continue
+    mast, mtype = match_comment, 'comment'
+    srcm_fpos, srcm_lpos = match_comment.fpos, match_comment.lpos
+  else
+    mast, mtype = match_ast, 'ast'
+    srcm_fpos, srcm_lpos = M.ast_pos_range(match_ast, tokenlist)
+  end
+  bsrcm_fpos, bsrcm_lpos = range_transform(srcm_fpos, srcm_lpos)
+
+  -- Never expand match if preserve specified.
+  if preserve then
+    return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, mast, mtype
   end
 
-  -- otherwise invalidate entire AST.
-  -- IMPROVE:performance: we don't always need to invalidate the entire AST here.
-  return nil, nil, nil, nil, top_ast, 'full'
+  -- Determine if replacement could break parent nodes.
+  local isreplacesafe
+  if mtype == 'whitespace' then
+    if bsrc:sub(bsrcm_fpos, bsrcm_lpos):match'^%s*$' then -- replaced with whitespace
+      if bsrc:sub(bsrcm_fpos-1, bsrcm_lpos+1):match'%s' then -- not eliminating whitespace
+        isreplacesafe = true
+      end
+    end
+  elseif mtype == 'comment' then
+    local m2src = bsrc:sub(bsrcm_fpos, bsrcm_lpos)
+    DEBUG('invalidate-comment[' .. m2src .. ']')
+    if quick_parse_comment(m2src) then  -- replaced with comment
+      isreplacesafe = true
+    end
+  end
+  if isreplacesafe then  -- return on safe replacement
+    return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, mast, mtype
+  end
+
+  -- Find smallest containing statement block that will compile.
+  while 1 do
+    match_ast = M.get_containing_statementblock(match_ast, top_ast)
+    local srcm_fpos, srcm_lpos = M.ast_pos_range(match_ast, tokenlist)
+    local bsrcm_fpos, bsrcm_lpos = range_transform(srcm_fpos, srcm_lpos)
+    local msrc = bsrc:sub(bsrcm_fpos, bsrcm_lpos)
+    DEBUG('invalidate-statblock:', match_ast and match_ast.tag, '[' .. msrc .. ']')
+    if loadstring(msrc) then -- compiled
+      return srcm_fpos, srcm_lpos, bsrcm_fpos, bsrcm_lpos, match_ast, 'statblock'
+    end
+    M.ensure_parents_marked(top_ast)
+    match_ast = match_ast.parent
+    if not match_ast then
+      return nil, nil, nil, nil, top_ast, 'full'  -- entire AST invalidated
+    end
+  end
 end
 
 
@@ -297,10 +308,28 @@ end
 -- Inserts all elements in list bt at index i in list t.
 -- CATEGORY: table utility
 local function tinsertlist(t, i, bt)
-  for bi=#bt,1,-1 do
-    table.insert(t, i, bt[bi])
-  end
+  local oldtlen, delta = #t, i - 1
+  for ti = #t + 1, #t + #bt do t[ti] = false end -- preallocate (avoid holes)
+  for ti = oldtlen, i, -1 do t[ti + #bt] = t[ti] end -- shift
+  for bi = 1, #bt do t[bi + delta] = bt[bi] end -- fill
 end
+--[[TESTSUITE:
+local function _tinsertlist(t, i, bt)
+  for bi=#bt,1,-1 do table.insert(t, i, bt[bi]) end
+end -- equivalent but MUCH less efficient for large tables
+local function _tinsertlist(t, i, bt)
+  for bi=1,#bt do table.insert(t, i+bi-1, bt[bi]) end
+end -- equivalent but MUCH less efficient for large tables
+local t = {}; tinsertlist(t, 1, {}); assert(table.concat(t)=='')
+local t = {}; tinsertlist(t, 1, {2,3}); assert(table.concat(t)=='23')
+local t = {4}; tinsertlist(t, 1, {2,3}); assert(table.concat(t)=='234')
+local t = {2}; tinsertlist(t, 2, {3,4}); assert(table.concat(t)=='234')
+local t = {4,5}; tinsertlist(t, 1, {2,3}); assert(table.concat(t)=='2345')
+local t = {2,5}; tinsertlist(t, 2, {3,4}); assert(table.concat(t)=='2345')
+local t = {2,3}; tinsertlist(t, 3, {4,5}); assert(table.concat(t)=='2345')
+print 'DONE'
+--]]
+
 
 
 -- Gets list of keyword positions related to node ast in source src
@@ -342,10 +371,14 @@ function M.get_keywords(ast, src)
       if not mfpos then
         mfpos, tok, mlppos = src:match("^%s*()(%p+)()", spos)
       end
+      if mfpos then
+        local mlpos = mlppos-1
+        if mlpos > lpos then mlpos = lpos end
       --DEBUG('look', ast.tag, #ast,i,j,'*', mfpos, tok, mlppos, fpos, lpos, src:sub(fpos, fpos+5))
-      if mfpos and mlppos-1 <= lpos then
-        list[#list+1] = mfpos
-        list[#list+1] = mlppos-1
+        if mlpos >= mfpos then
+          list[#list+1] = mfpos
+          list[#list+1] = mlpos
+        end
       end
       spos = mlppos
     until not spos or spos > lpos
@@ -506,7 +539,7 @@ end
 
 
 
--- Gets smallest AST node inside top_ast/tokenlist/src
+-- Gets smallest AST node in top_ast/tokenlist/src
 -- completely containing position range [pos1, pos2].
 -- careful: "function" is not part of the `Function node.
 -- If range is inside comment, returns comment also.
@@ -514,7 +547,7 @@ end
 -- and range is inside whitespace, then returns true in third return value.
 --FIX: maybe src no longer needs to be passed
 -- CATEGORY: AST/tokenlist query
-function M.smallest_ast_in_range(top_ast, tokenlist, src, pos1, pos2)
+function M.smallest_ast_containing_range(top_ast, tokenlist, src, pos1, pos2)
   local f0idx, l0idx = M.tokenlist_idx_range_over_pos_range(tokenlist, pos1, pos2)
   
   -- Find enclosing AST.
@@ -658,7 +691,7 @@ end
 
 -- Calls mark_parents(ast) if ast not marked.
 -- CATEGORY: AST query
-local function ensure_parents_marked(ast)
+function M.ensure_parents_marked(ast)
   if ast[1] and not ast[1].parent then M.mark_parents(ast) end
 end
 
@@ -719,7 +752,7 @@ function M.get_containing_statementblock(ast, top_ast)
   if ast.tag2 == 'Stat' or ast.tag2 == 'StatBlock' or ast.tag2 == 'Block' then
     return ast
   else
-    ensure_parents_marked(top_ast)
+    M.ensure_parents_marked(top_ast)
     return M.get_containing_statementblock(ast.parent, top_ast)
   end
 end
@@ -732,7 +765,7 @@ end
 -- CATEGORY: AST query
 function M.select_statementblockcomment(ast, tokenlist, fpos, lpos, allowexpand)
 --IMPROVE: rename ast to top_ast
-  local match_ast, comment_ast = M.smallest_ast_in_range(ast, tokenlist, nil, fpos, lpos)
+  local match_ast, comment_ast = M.smallest_ast_containing_range(ast, tokenlist, nil, fpos, lpos)
   local select_ast = comment_ast or M.get_containing_statementblock(match_ast, ast)
   local nfpos, nlpos = M.ast_pos_range(select_ast, tokenlist)
   --DEBUG('s', nfpos, nlpos, fpos, lpos, match_ast.tag, select_ast.tag)
@@ -745,7 +778,7 @@ function M.select_statementblockcomment(ast, tokenlist, fpos, lpos, allowexpand)
       -- note: multiple times may be needed to expand selection.  For example, in
       --   `for x=1,2 do f() end` both the statement `f()` and block `f()` have
       --   the same position range.
-      ensure_parents_marked(ast)
+      M.ensure_parents_marked(ast)
       while select_ast.parent and fpos == nfpos and lpos == nlpos do
         select_ast = M.get_containing_statementblock(select_ast.parent, ast)
         nfpos, nlpos = M.ast_pos_range(select_ast, tokenlist)
@@ -762,7 +795,7 @@ end
 -- Renders Metalua table tag fields specially {tag=X, ...} --> "`X{...}".
 -- On first call, only pass parameter o.
 -- CATEGORY: AST debug
-local ignore_keys_ = {lineinfo=true, tag=true}
+local ignore_keys_ = {lineinfo=true}
 local norecurse_keys_ = {parent=true, ast=true}
 local function dumpstring_key_(k, isseen, newindent)
   local ks = type(k) == 'string' and k:match'^[%a_][%w_]*$' and k or
@@ -791,8 +824,13 @@ function M.dumpstring(o, isseen, indent, key)
       return (type(o.tag) == 'string' and '`' .. o.tag .. ':' or '') .. tostring(o)
     else isseen[o] = true end -- avoid recursion
 
+    local used = {}
+    
     local tag = o.tag
-    local s = (tag and '`' .. tag or '') .. '{'
+    local s = '{'
+    if type(o.tag) == 'string' then
+      s = '`' .. tag .. s; used['tag'] = true
+    end
     local newindent = indent .. '  '
 
     local ks = {}; for k in pairs(o) do ks[#ks+1] = k end
@@ -805,9 +843,9 @@ function M.dumpstring(o, isseen, indent, key)
     end
 
     -- inline elements
-    local used = {}
     for _,k in ipairs(ks) do
-      if ignore_keys_[k] then used[k] = true
+      if used[k] then -- skip
+      elseif ignore_keys_[k] then used[k] = true
       elseif (type(k) ~= 'number' or not forcenummultiline) and
               type(k) ~= 'table' and (type(o[k]) ~= 'table' or norecurse_keys_[k])
       then
@@ -821,7 +859,7 @@ function M.dumpstring(o, isseen, indent, key)
     for _,k in ipairs(ks) do
       if not used[k] then
         if not done then s = s .. '\n'; done = true end
-        s = s .. newindent .. dumpstring_key_(k) .. '=' .. M.dumpstring(o[k], isseen, newindent, k) .. ',\n'
+        s = s .. newindent .. dumpstring_key_(k, isseen) .. '=' .. M.dumpstring(o[k], isseen, newindent, k) .. ',\n'
       end
     end
     s = s:gsub(',(%s*)$', '%1')
@@ -841,7 +879,7 @@ function M.dump_tokenlist(tokenlist)
   local ts = {}
   for i,token in ipairs(tokenlist) do
     ts[#ts+1] = 'tok.' .. i .. ': [' .. token.fpos .. ',' .. token.lpos .. '] '
-       .. tostring(token[1]) .. tostring(token.ast.tag)
+       .. tostring(token[1]) .. ' ' .. tostring(token.ast.tag)
   end
   return table.concat(ts, '\n')
 end
@@ -869,6 +907,8 @@ return M
 
 --FIX:Metalua: `while 1 do --[[x]] --[[y]] end` returns first > last
 --   lineinfo for contained block
+
+--FIX:Metalua: search for "PATCHED:LuaInspect" in the metalualib folder.
 
 --FIX?:Metalua: loadstring parses "--x" but metalua omits the comment in the AST
 

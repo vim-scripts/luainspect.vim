@@ -14,11 +14,12 @@ M.APIVERSION = 0.20100805
 local LA = require "luainspect.ast"
 local LG = require "luainspect.globals"
 local LS = require "luainspect.signatures"
+local T = require "luainspect.types"
 
 --! require 'luainspect.typecheck' (context)
-
-
-local T = require "luainspect.types"
+ 
+local ENABLE_RETURN_ANALYSIS = false
+local DETECT_DEADCODE = false
 
 
 -- Functional forms of Lua operators.
@@ -74,7 +75,7 @@ local function dobinop(opid, a, b)
       error('invalid operation on booleans: ' .. opid, 0)
     end
   elseif T.istype[a] or T.istype[b] then
-    return nil, 'unknown'
+    return T.universal
   else
     return ops[opid](a, b)
   end
@@ -122,7 +123,7 @@ M.package_loaded = {}
 local function debugvalue(ast)
   local s
   if ast then
-    s = ast.valueknown and 'known:' .. tostring(ast.value) or 'unknown'
+    s = ast.value ~= T.universal and 'known:' .. tostring(ast.value) or 'unknown'
   else
     s = '?'
   end
@@ -141,12 +142,20 @@ local function readfile(path)
   return nil, err
 end
 
+-- Similar to string.gsub but with plain replacement (similar to option in string.match)
+-- http://lua-users.org/lists/lua-l/2002-04/msg00118.html
+-- CATEGORY: utility/string
+local function plain_gsub(s, pattern, repl)
+  repl = repl:gsub('(%W)', '%%%1')
+  return s:gsub(pattern, repl)
+end
+
 -- Loads source code of given module name.
 -- Returns code followed by path.
 -- CATEGORY: utility/package
 local function load_module_source(name)
   for spec in package.path:gmatch'[^;]+' do
-    local testpath = spec:gsub('%?', name:gsub('%.', '/'))
+    local testpath = plain_gsub(spec, '%?', (name:gsub('%.', '/')))
     local src, err_ = readfile(testpath)
     if src then return src, testpath end
   end
@@ -296,7 +305,7 @@ function M.mark_related_keywords(top_ast, tokenlist, src)
     if token.tag == 'Keyword' and not idof[token] then
       id = id + 1
       local match_ast =
-        LA.smallest_ast_in_range(top_ast, tokenlist, src, token.fpos, token.lpos)
+        LA.smallest_ast_containing_range(top_ast, tokenlist, src, token.fpos, token.lpos)
       local ktokenlist = M.related_keywords(match_ast, top_ast, tokenlist, src)
       if ktokenlist then
          for _, ktoken in ipairs(ktokenlist) do
@@ -320,25 +329,32 @@ local unescape = {['d'] = '.'}
 -- Set known value on ast to that on src_ast.
 -- CATEGORY: utility function for infer_values.
 local function set_value(ast, src_ast)
-  if not src_ast.valueknown or ast.valueknown and ast.value ~= src_ast.value then -- unknown if multiple values
-    ast.valueknown = 'multiple'
-  else
-    ast.valueknown = src_ast.valueknown
+  if not ast.isvaluepegged then
     ast.value = src_ast.value
   end
 end
 
 
+local function known(o)
+  return not T.istype[o]
+end
+local function unknown(o)
+  return T.istype[o]
+end
+
+
 -- CATEGORY: utility function for infer_values.
 local function tastnewindex(t_ast, k_ast, v_ast)
-  if t_ast.valueknown and k_ast.valueknown and v_ast.valueknown then
+  if known(t_ast.value) and known(k_ast.value) and known(v_ast.value) then
     local t, k, v = t_ast.value, k_ast.value, v_ast.value
     if t[k] ~= nil and v ~= t[k] then -- multiple values
-      return v, 'multiple'
+      return T.universal
     else
       t[k] = v
-      return v, nil
+      return v
     end
+  else
+    return T.universal
   end
 end
 
@@ -378,62 +394,168 @@ end
 
 
 -- Reports warning. List of strings.
-local function warn(...)
-   if _G.scite and _G.scite.SendEditor then -- operating inside SciTE
-     print('warning:', ...) -- IMPROVE? eliminate editor-specific code
-   else
-     io.stderr:write('warning:', ...); io.stderr:write'\n'
-   end
+local function warn(report, ...)
+  report('warning: ' .. table.concat({...}, ' '))
 end
 
 -- Reports status messages. List of strings.
-local function status(...)
-   if _G.scite and _G.scite.SendEditor then -- operating inside SciTE
-     print('status:', ...) -- IMPROVE? eliminate editor-specific code
-   else
-     io.stderr:write('status:', ...); io.stderr:write'\n'
-   end
+local function status(report, ...)
+  report('status: ' .. table.concat({...}, ' '))
 end
 
-
+-- unique value used to detect require loops (A require B require A)
+local REQUIRE_SENTINEL = function() end
 
 -- Version of require that does source analysis (inspect) on module.
-function M.require_inspect(name)
+function M.require_inspect(name, report)
   local ast = M.package_loaded[name]
+  if ast == REQUIRE_SENTINEL then
+     warn(report, "loop in require when loading " .. name)
+     return nil
+  end
   if ast then return ast end
-  status('loading:' .. name)
+  status(report, 'loading:' .. name)
+  M.package_loaded[name] = REQUIRE_SENTINEL -- avoid recursion on require loops
   local msrc, mpath = load_module_source(name)
   local vinfo
   if msrc then
     local mast, err = LA.ast_from_string(msrc, mpath)
     if mast then
       local mtokenlist = LA.ast_to_tokenlist(mast, msrc)
-      M.inspect(mast, mtokenlist)
-      vinfo = mast[#mast] and mast[#mast].tag == 'Return' and mast[#mast][1]
-        or {valueknown=true, value=nil}
-      -- IMPROVE: return might not be last statement.
+      M.inspect(mast, mtokenlist, report)
+      if ENABLE_RETURN_ANALYSIS then
+        vinfo = mast
+      else
+        if mast[#mast] and mast[#mast].tag == 'Return' and mast[#mast][1] then
+          vinfo = mast[#mast][1]
+        else
+          vinfo = T.universal
+        end
+      end
     else
-      vinfo = {valueknown='error', value=err}
-      warn(err, " ", mpath) --Q:error printing good?
+      vinfo = {value=T.error(err)}
+      warn(report, err, " ", mpath) --Q:error printing good?
     end
   else
-    warn('module not found: ' .. name)
-    vinfo = {valueknown='error', value='module not found'} --IMPROVE: include search paths?
+    warn(report, 'module not found: ' .. name)
+    vinfo = {value=T.error'module not found'} --IMPROVE: include search paths?
   end
   M.package_loaded[name] = vinfo
   return vinfo
 end
 
--- Infer values of variables.
+
+-- Mark AST node and all children as dead (ast.isdead).
+local function mark_dead(ast)
+  LA.walk(ast, function(bast) bast.isdead = true end)
+end
+
+-- Gets list of `Return statement ASTs in `Function (or chunk) f_ast, not including
+-- return's in nested functions.  Also returns boolean `has_implicit` indicating
+-- whether function may return by exiting the function without a return statement.
+-- Returns that are never exected are omitted (e.g. last return is omitted in
+-- `function f() if x then return 1 else return 2 end return 3 end`).
+-- Also marks AST nodes with ast.isdead (dead-code).
+local function get_func_returns(f_ast)
+  local isalwaysreturn = {}
+  local returns = {}
+  local function f(ast, isdead)
+    for _,cast in ipairs(ast) do if type(cast) == 'table' then
+      if isdead then mark_dead(cast) end
+      if cast.tag ~= 'Function' and not isdead then -- skip nested functions
+        f(cast, isdead) -- depth-first traverse
+      end
+      if ast.tag ~= 'If' and isalwaysreturn[cast] then isdead = true end
+        -- subsequent statements in block never executed
+    end end
+    
+    -- Code on walking up AST: propagate children to parents
+    if ast.tag == 'Return' then
+      returns[#returns+1] = ast
+      isalwaysreturn[ast] = true
+    elseif ast.tag == 'If' then
+      if #ast%2 ~= 0 then -- has 'else' block
+        local isreturn = true
+        for i=2,#ast do
+          if (i%2==0 or i==#ast) and not isalwaysreturn[ast[i]] then isreturn = nil; break end
+        end
+        isalwaysreturn[ast] = isreturn
+      end
+    else -- note: iterates not just blocks, but should be ok
+      for i=1,#ast do
+        if isalwaysreturn[ast[i]] then
+          isalwaysreturn[ast] = true; break
+        end
+      end
+    end
+  end
+  f(f_ast, false)
+  local block_ast = f_ast[2]
+  local has_implicit = not isalwaysreturn[block_ast]
+  return returns, has_implicit
+end
+
+-- temporary hack?
+local function valnode_normalize(valnode)
+  if valnode then
+    return valnode.value
+  else
+    return T.none
+  end
+end
+
+
+-- Gets return value at given return argument index, given list of `Return statements.
+-- Return value is a superset of corresponding types in list of statements.
+-- Example: {`Return{1,2,3}, `Return{1,3,'z'}} would return
+-- 1, T.number, and T.universal for retidx 1, 2 and 3 respectively.
+local function get_return_value(returns, retidx)
+  if #returns == 0 then return T.none
+  elseif #returns == 1 then
+    return valnode_normalize(returns[1][retidx])
+  else
+    local combined_value = valnode_normalize(returns[1][retidx])
+    for i=2,#returns do
+      local cur_value = valnode_normalize(returns[i][retidx])
+      combined_value = T.superset_types(combined_value, cur_value)
+      if combined_value == T.universal then -- can't expand set further
+          return combined_value
+      end
+    end
+    return combined_value
+    --TODO: handle values with possibly any number of return values, like f()
+  end
+end
+
+
+-- Gets return values (or types) on `Function (or chunk) represented by given AST.
+local function get_func_return_values(f_ast)
+  local returns, has_implicit = get_func_returns(f_ast)
+  if has_implicit then returns[#returns+1] = {tag='Return'} end
+
+  local returnvals = {}
+  for retidx=1,math.huge do
+    local value = get_return_value(returns, retidx)
+    if value == T.none then break end
+    returnvals[#returnvals+1] = value
+  end
+  return returnvals
+end
+-- Example: AST of `function(x) if x then return 1,2,3 else return 1,3,"z" end end`
+-- returns {1, T.number, T.universal}.
+
+
+-- Infer values of variables. Also marks dead code (ast.isdead).
 --FIX/WARNING - this probably needs more work
--- Sets top_ast.valueglobals, ast.value, ast.valueknown, ast.idxvalue, ast.idxvalueknown
+-- Sets top_ast.valueglobals, ast.value, ast.idxvalue
 -- CATEGORY: code interpretation
 local nil_value_ast = {}
-function M.infer_values(top_ast, tokenlist)
+function M.infer_values(top_ast, tokenlist, report)
   if not top_ast.valueglobals then top_ast.valueglobals = {} end
+  
 
   -- infer values
-  LA.walk(top_ast, nil, function(ast)
+  LA.walk(top_ast, nil, function(ast) -- walk up
     -- process `require` statements.
     if ast.tag == 'Local' or ast.tag == 'Localrec' then
       local vars_ast, values_ast = ast[1], ast[2]
@@ -449,20 +571,18 @@ function M.infer_values(top_ast, tokenlist)
         local var_ast, value_ast = vars_ast[i], values_ast[i]
         value_ast = value_ast or nil_value_ast
         if var_ast.tag == 'Index' then
-          if var_ast[1].valueknown and var_ast[2].valueknown and value_ast.valueknown then
-            var_ast.valueknown, var_ast.value, multiple = pcall(tastnewindex, var_ast[1], var_ast[2], value_ast)
-            if multiple then var_ast.valueknown = 'multiple' end
+          local ok;  ok, var_ast.value = pcall(tastnewindex, var_ast[1], var_ast[2], value_ast)
+          if not ok then var_ast.value = T.error(var_ast.value) end
             --FIX: propagate to localdefinition?
-          end
         else
           assert(var_ast.tag == 'Id', var_ast.tag)
           if var_ast.localdefinition then
             set_value(var_ast, value_ast)
           else -- global
-            if value_ast.valueknown then
+            --old:if known(value_ast.value) then
               local name, val = var_ast[1], value_ast.value
               top_ast.valueglobals[name] = val
-            end
+            --end
           end
         end --FIX: handle functions with multiple returns
         --FIX: propagate to definition or localdefinition?
@@ -470,7 +590,7 @@ function M.infer_values(top_ast, tokenlist)
     elseif ast.tag == 'Id' then
       if ast.localdefinition then
         local localdefinition = ast.localdefinition
-        if localdefinition.valueknown and not localdefinition.isset then -- IMPROVE: support non-const (isset false) too
+        if not localdefinition.isset then -- IMPROVE: support non-const (isset false) too
           set_value(ast, localdefinition)
         end
       else -- global
@@ -478,118 +598,153 @@ function M.infer_values(top_ast, tokenlist)
         local v = top_ast.valueglobals[name]
         if v ~= nil then
           ast.value = v
-          ast.valueknown = true
         else
-          ast.valueknown, ast.value = pcall(tindex, _G, ast[1])
+          local ok; ok, ast.value = pcall(tindex, _G, ast[1])
+          if not ok then ast.value = T.error(ast.value) end
         end
       end
     elseif ast.tag == 'Index' then
       local t_ast, k_ast = ast[1], ast[2]
-      if t_ast.valueknown and k_ast.valueknown then
-        ast.valueknown, ast.value = pcall(tindex, t_ast.value, k_ast.value)
+      if known(t_ast.value) and known(k_ast.value) then
+        local ok; ok, ast.value = pcall(tindex, t_ast.value, k_ast.value)
+        if not ok then ast.value = T.error(ast.value) end
       end
-    elseif ast.tag == 'Call' then   
+    elseif ast.tag == 'Call' then
+      local func_ast = ast[1]
       local args_known = true
-      for i=2,#ast do if ast[i].valueknown ~= true then args_known = false; break end end
-      if ast[1].valueknown and args_known then
-        local func = ast[1].value
-        local found
-        if func == require and ast[2].valueknown then
-          local rast = M.require_inspect(ast[2].value)
-          if rast and rast.valueknown then
-            ast.valueknown, ast.value = rast.valueknown, rast.value
+      for i=2,#ast do if unknown(ast[i].value) then args_known = false; break end end
+      local found
+      if known(func_ast.value) and args_known then
+        local values_concrete = true
+        for i=1,#ast do if unknown(ast[i].value) then values_concrete = false; break end end
+        local func = func_ast.value
+        if func == require and known(ast[2].value) then
+          local rast = M.require_inspect(ast[2].value, report)
+          if rast and known(rast.value) then
+            ast.value = rast.value
             found = true
           end
         end
         if not found and LS.safe_function[func] then
           local values = {}; for i=1,#ast-1 do values[i] = ast[i+1].value end
-          ast.valueknown, ast.value = pcall(func, unpack(values,1,#ast-1))
+          local ok; ok, ast.value = pcall(func, unpack(values,1,#ast-1))
+          if not ok then ast.value = T.error(ast.value) end
           --TODO: handle multiple return values
+          found = true
         end
       end
-      if not ast.valueknown then
-        local mf = LS.mock_functions[ast[1].value]
+      if not found then
+        local mf = LS.mock_functions[func_ast.value]
         if mf then
           local o1 = mf.outputs[1] -- IMPROVE: handle multiple returns
-          ast.valueknown, ast.value = true, o1
+          ast.value = o1
+        else
+          local info = M.debuginfo[func_ast.value]
+          local retvals = info and info.retvals
+          if retvals then
+            ast.value = retvals[1]
+          end
+          --TODO:handle multiple return values
         end
       end
     elseif ast.tag == 'Invoke' then
       local t_ast, k_ast = ast[1], ast[2]
-      if t_ast.valueknown and k_ast.valueknown then
-        ast.idxvalueknown, ast.idxvalue = pcall(tindex, t_ast.value, k_ast.value)
+      if known(t_ast.value) and known(k_ast.value) then
+        local ok; ok, ast.idxvalue = pcall(tindex, t_ast.value, k_ast.value)
+        if not ok then ast.idxvalue = T.error(ast.idxvalue) end
       end
 
       -- note: similar to 'Call' code
       local args_known = true
-      for i=3,#ast do if ast[i].valueknown ~= true then args_known = false; break end end
-      if ast.idxvalueknown and args_known then
+      for i=3,#ast do if unknown(ast[i].value) then args_known = false; break end end
+      if known(ast.idxvalue) and args_known then
         local func = ast.idxvalue
         if LS.safe_function[func] then
           local values = {}; for i=1,#ast-2 do values[i] = ast[i+2].value end
-          ast.valueknown, ast.value = pcall(func, t_ast.value, unpack(values,1,#ast-2))
+          local ok; ok, ast.value = pcall(func, t_ast.value, unpack(values,1,#ast-2))
+          if not ok then ast.value = T.error(ast.value) end
           --TODO: handle multiple return values
         end
       end
-      if not ast.valueknown then
+      if unknown(ast.value) then
         local mf = LS.mock_functions[ast.idxvalue]
         if mf then
           local o1 = mf.outputs[1] -- IMPROVE: handle multiple returns
-          ast.valueknown, ast.value = true, o1
+          ast.value = o1
         end
       end
     elseif ast.tag == 'String' or ast.tag == 'Number' then
-      ast.value = ast[1]; ast.valueknown = true
+      ast.value = ast[1]
     elseif ast.tag == 'True' or ast.tag == 'False' then
-      ast.value = (ast.tag == 'True'); ast.valueknown = true
-    elseif ast.tag == 'Function' then
-      if not ast.valueknown then -- avoid redefinition
+      ast.value = (ast.tag == 'True')
+    elseif ast.tag == 'Function' or ast == top_ast then -- includes chunk
+      if ast.value == nil then -- avoid redefinition
         local x
         local val = function() x=nil end
         local fpos = LA.ast_pos_range(ast, tokenlist)
         local source = ast.lineinfo.first[4] -- a HACK? relies on AST lineinfo
-        local info = {fpos=fpos, source="@" .. source, fast=ast, tokenlist=tokenlist}
+        local retvals
+        if ENABLE_RETURN_ANALYSIS then
+          retvals = get_func_return_values(ast) --Q:move outside of containing conditional?
+        end
+        local info = {fpos=fpos, source="@" .. source, fast=ast, tokenlist=tokenlist, retvals=retvals}
         M.debuginfo[val] = info
         ast.value = val
         ast.nocollect = info -- prevents garbage collection while ast exists
       end
-      ast.valueknown = true
     elseif ast.tag == 'Table' then
-      if not ast.valueknown then -- avoid redefinition
+      if ast.value == nil then -- avoid redefinition
         local value = {}
         local n = 1
         for _,east in ipairs(ast) do
           if east.tag == 'Pair' then
             local kast, vast = east[1], east[2]
-            if kast.valueknown and vast.valueknown then
+            if known(kast.value) and known(vast.value) then
               value[kast.value] = vast.value
             end
           else
-            if east.valueknown then
+            if known(east.value) then
               value[n] = east.value
             end
             n = n + 1
           end
         end
         --table.foreach(value, print)
-        ast.value = value; ast.valueknown = true
+        ast.value = value
       end
     elseif ast.tag == 'Paren' then
-      ast.value = ast[1].value; ast.valueknown = ast[1].valueknown
+      ast.value = ast[1].value
     elseif ast.tag == 'Op' then
       local opid, aast, bast = ast[1], ast[2], ast[3]
-      if aast.valueknown and (not bast or bast.valueknown) then
-        local ok, val, unknown
-        if bast then
-          ok, val, unknown = pcall(dobinop, opid, aast.value, bast.value)
-        else
-          ok, val, unknown = pcall(dounop, opid, aast.value)
+      local ok
+      if bast then
+        ok, ast.value = pcall(dobinop, opid, aast.value, bast.value)
+      else
+        ok, ast.value = pcall(dounop, opid, aast.value)
+      end
+      if not ok then ast.value = T.error(ast.value) end
+    elseif ast.tag == 'If' then
+      -- detect dead-code
+      if DETECT_DEADCODE then
+        for i=2,#ast,2 do local valnode = ast[i-1]
+          local bval = T.boolean_cast(valnode.value)
+          if bval == false then -- certainly false
+            mark_dead(ast[i])
+          elseif bval == true then -- certainly true
+            for ii=i+1,#ast do if ii%2 == 0 or ii==#ast then -- following blocks are dead
+              mark_dead(ast[ii])
+            end end
+            break
+          end
         end
-        if unknown then -- nothing
-        elseif ok then
-          ast.value = val; ast.valueknown = true
-        else
-          ast.value = T.error(val); ast.valueknown = true
+      end
+      -- IMPROVE? `if true return end; f()` - f could be marked as deadcode
+    elseif ast.tag == 'While' then
+      -- detect dead-code
+      if DETECT_DEADCODE then
+        local expr_ast, body_ast = ast[1], ast[2]
+        if T.boolean_cast(expr_ast.value) == false then
+          mark_dead(body_ast)
         end
       end
     end
@@ -662,8 +817,7 @@ env.error = T.error
 function env.apply_value(pattern, val)
   local function f(ast)
     if ast.tag == 'Id' and ast[1]:match(pattern) then
-      ast.valueknown = true
-      ast.value = val
+      ast.value = val; ast.isvaluepegged = true
     end
     for _,bast in ipairs(ast) do
       if type(bast) == 'table' then
@@ -684,17 +838,17 @@ setfenv(env.apply_value, env)
 -- Evaluate all special comments (i.e. comments prefixed by '!') in code.
 -- This is similar to luaanalyze.
 -- CATEGORY: code interpretation / special comments
-function M.eval_comments(ast, tokenlist)
+function M.eval_comments(ast, tokenlist, report)
   local function eval(command, ast)
     --DEBUG('!', command:gsub('%s+$', ''), ast.tag)
     local f, err = loadstring(command)
     if f then
       setfenv(f, env); env.ast = ast
       local ok, err = pcall(f, ast)
-      if not ok then warn(err, ': ', command) end
+      if not ok then warn(report, err, ': ', command) end
       env.ast = nil
    else
-     warn(err, ': ', command)
+     warn(report, err, ': ', command)
     end
   end
 
@@ -703,7 +857,7 @@ function M.eval_comments(ast, tokenlist)
     if token.tag == 'Comment' then
       local command = token[1]:match'^!(.*)'
       if command then
-        local mast = LA.smallest_ast_in_range(ast, tokenlist, nil, token.fpos, token.lpos)
+        local mast = LA.smallest_ast_containing_range(ast, tokenlist, nil, token.fpos, token.lpos)
         eval(command, mast)
       end
     end
@@ -736,9 +890,9 @@ function M.uninspect(top_ast)
     
     -- undo infer_values
     ast.value = nil
-    ast.valueknown = nil
     ast.idxvalue = nil
-    ast.idxvalueknown = nil
+    ast.isdead = nil   -- via get_func_returns
+    ast.isvaluepegged = nil
     
     -- undo walk setting ast.seevalue
     ast.seevalue = nil
@@ -757,19 +911,22 @@ function M.uninspect(top_ast)
 end
 
 
--- Main inspection routine.
+-- Main inspection routine.  Inspects top_ast/tokenlist.
+-- Error/status messages are sent to function `report`.
 -- CATEGORY: code interpretation
-function M.inspect(top_ast, tokenlist)
+function M.inspect(top_ast, tokenlist, report)
   --DEBUG: local t0 = os.clock()
-
-  local globals = LG.globals(top_ast)
   
+  report = report or function() end
+  
+  local globals = LG.globals(top_ast)
+ 
   M.mark_identifiers(top_ast)
 
-  M.eval_comments(top_ast, tokenlist)
+  M.eval_comments(top_ast, tokenlist, report)
   
-  M.infer_values(top_ast, tokenlist)
-  M.infer_values(top_ast, tokenlist) -- two passes to handle forward declarations of globals (IMPROVE: more passes?)
+  M.infer_values(top_ast, tokenlist, report)
+  M.infer_values(top_ast, tokenlist, report) -- two passes to handle forward declarations of globals (IMPROVE: more passes?)
   
   -- Make some nodes as having values related to its parent.
   -- This allows clicking on `bar` in `foo.bar` to display
@@ -778,7 +935,7 @@ function M.inspect(top_ast, tokenlist)
     if ast.tag == "Index" then
       ast[2].seevalue = ast
     elseif ast.tag == "Invoke" then
-      ast[2].seevalue = {value=ast.idxvalue, valueknown=ast.idxvalueknown, parent=ast}
+      ast[2].seevalue = {value=ast.idxvalue, parent=ast}
     end
   end)
 
@@ -906,6 +1063,18 @@ function M.get_signature_of_value(value)
       end
     end
     local sig = 'function(' .. table.concat(ts, ' ') .. ')'
+    if info.retvals then
+      local vals = info.retvals
+      local ts = {}
+      if #vals == 0 then
+        sig = sig .. " no returns"
+      else
+        for i=1,#vals do local val = vals[i]
+          ts[#ts+1] = T.istype[val] and tostring(val) or LA.dumpstring(val) --Q:dumpstring too verbose?
+        end
+        sig = sig .. " returns " .. table.concat(ts, ", ")
+      end
+    end
     return sig
   end
   local sig = LS.value_signatures[value] -- else try this
@@ -916,7 +1085,7 @@ end
 -- Gets signature (function argument string or helpinfo string) on variable ast.
 -- Returns nil on not found.
 function M.get_signature(ast)
-  if ast.valueknown then
+  if known(ast.value) then
     return M.get_signature_of_value(ast.value)
   end
 end
@@ -956,7 +1125,7 @@ end
 -- Returns true iff value in ast node is known in some way.
 function M.is_known_value(ast)
   local vast = ast.seevalue or ast
-  return vast.definedglobal or vast.valueknown and vast.value ~= nil
+  return vast.definedglobal or known(vast.value) and vast.value ~= nil
 end
 
 
@@ -1000,21 +1169,14 @@ function M.get_value_details(ast, tokenlist, src)
     info = info .. "? "
   end
 
-  if vast.valueknown == 'multiple' then
-    info = info .. "\nmultiple values including: " .. tostring(vast.value) .. " "
-  elseif vast.valueknown then
-    info = info .. "\nvalue: " .. tostring(vast.value) .. " "
-  elseif vast.value then
-    info = info .. "\nerror value: " .. tostring(vast.value) .. " "
-  end -- else no info
-
+  info = info .. "\nvalue: " .. tostring(vast.value) .. " "
  
   local sig = M.get_signature(vast)
   if sig then
     local kind = sig:find '%w%s*%b()$'  and 'signature' or 'description'
     info = info .. "\n" .. kind .. ": " .. sig .. " "
   end
-
+  
   local fpos, fline, path = M.ast_to_definition_position(ast, tokenlist)
   if fpos or fline then
     local fcol
@@ -1058,7 +1220,7 @@ function M.list_warnings(tokenlist, src)
       if ast.localdefinition == ast and not ast.isused then
         warn("unused local " .. ast[1])
       end
-      if ast.isfield and not(ast.seevalue.valueknown and ast.seevalue.value ~= nil) then
+      if ast.isfield and not(known(ast.seevalue.value) and ast.seevalue.value ~= nil) then
         warn("unknown field " .. ast[1])
       elseif ast.tag == 'Id' and not ast.localdefinition and not ast.definedglobal then
         warn("unknown global " .. ast[1])
