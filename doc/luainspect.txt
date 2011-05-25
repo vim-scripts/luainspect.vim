@@ -6,33 +6,34 @@ It was inspired by lua2-mode [2] (for Emacs [3]) and the SciTE [4] plug-in
 included with LuaInspect. In addition to the semantic highlighting the
 following features are currently supported:
 
- • Press <F2> with the text cursor on a variable and the plug-in will prompt
+ - Press '<F2>' with the text cursor on a variable and the plug-in will prompt
    you to rename the variable.
 
- • Press 'gd' (in normal mode) with the text cursor on a variable and you'll
+ - Press 'gd' (in normal mode) with the text cursor on a variable and you'll
    jump to its declaration / first occurrence.
 
- • When you hover over a variable with the mouse cursor in graphical Vim,
+ - When you hover over a variable with the mouse cursor in graphical Vim,
    information about the variable is displayed in a tooltip.
 
- • If the text cursor is on a variable while the highlighting is refreshed then
+ - If the text cursor is on a variable while the highlighting is refreshed then
    all occurrences of the variable will be marked in the style of Vim's
    cursorline option (see |'cursorline'|).
 
- • When luainspect reports a wrong argument count for a function call the text
+ - When luainspect reports a wrong argument count for a function call the text
    will be highlighted with a green underline. When you hover over the
    highlighted text a tooltip shows the associated warning message.
 
- • When LuaInspect reports warnings about unused variables, wrong argument
+ - When LuaInspect reports warnings about unused variables, wrong argument
    counts, etc. they are shown in a location list window (see |location-list|).
 
- • When a syntax error is found (during highlighting or using the rename
+ - When a syntax error is found (during highlighting or using the rename
    functionality) the lines where the error is reported will be marked like a
    spelling error.
 
     Screenshot of semantic highlighting, see reference [5]
 
 ==============================================================================
+                                                       *luainspect-installation*
 Installation ~
 
 Unzip the most recent ZIP archive [6] file inside your Vim profile directory
@@ -47,6 +48,7 @@ shell.vim [7] plug-in which includes a DLL [8] that works around this issue.
 Once you've installed both plug-ins it should work out of the box!
 
 ==============================================================================
+                                                              *luainspect-usage*
 Usage ~
 
 When you open any Lua file the semantic highlighting should be enabled
@@ -54,34 +56,47 @@ automatically within a few seconds, so you don't have to configure anything if
 you're happy with the defaults.
 
 ------------------------------------------------------------------------------
-The *:LuaInspect* command
+                                                           *:luainspect-command*
+The ':LuaInspect' command ~
 
 You don't need to use this command unless you've disabled automatic
-highlighting using |g:lua_inspect_events|. When you execute this command the
+highlighting using 'g:lua_inspect_events'. When you execute this command the
 plug-in runs the LuaInspect tool and then highlights all variables in the
 current buffer using one of the following highlighting groups:
 
- • luaInspectGlobalDefined
- • luaInspectGlobalUndefined
- • luaInspectLocalUnused
- • luaInspectLocalMutated
- • luaInspectUpValue
- • luaInspectParam
- • luaInspectLocal
- • luaInspectFieldDefined
- • luaInspectFieldUndefined
- • luaInspectSelectedVariable
- • luaInspectWrongArgCount
- • luaInspectSyntaxError
+ - luaInspectGlobalDefined
+
+ - luaInspectGlobalUndefined
+
+ - luaInspectLocalUnused
+
+ - luaInspectLocalMutated
+
+ - luaInspectUpValue
+
+ - luaInspectParam
+
+ - luaInspectLocal
+
+ - luaInspectFieldDefined
+
+ - luaInspectFieldUndefined
+
+ - luaInspectSelectedVariable
+
+ - luaInspectWrongArgCount
+
+ - luaInspectSyntaxError
 
 If you don't like one or more of the default styles the Vim documentation
 describes how to change them (see |:hi-default|). If you want to disable the
 semantic highlighting in a specific Vim buffer execute ':LuaInspect!' in that
-buffer. When you want to reenable the highlighting execute |:LuaInspect| again,
-but now without the bang (see |:command-bang|).
+buffer. When you want to reenable the highlighting execute ':LuaInspect'
+again, but now without the bang (see |:command-bang|).
 
 ------------------------------------------------------------------------------
-The *g:loaded_luainspect* option
+                                                    *g:loaded_luainspect-option*
+The 'g:loaded_luainspect' option ~
 
 This variable isn't really an option but if you want to avoid loading the
 'luainspect.vim' plug-in you can set this variable to any value in your |vimrc|
@@ -90,7 +105,8 @@ script:
     :let g:loaded_luainspect = 1
 
 ------------------------------------------------------------------------------
-The *g:lua_inspect_warnings* option
+                                      *luainspect-g:lua_inspect_warnings-option*
+The 'g:lua_inspect_warnings' option ~
 
 When LuaInspect reports warnings about unused variables, wrong argument
 counts, etc. they are automatically shown in a location list window (see
@@ -99,7 +115,8 @@ counts, etc. they are automatically shown in a location list window (see
     :let g:lua_inspect_warnings = 0
 
 ------------------------------------------------------------------------------
-The *g:lua_inspect_events* option
+                                        *luainspect-g:lua_inspect_events-option*
+The 'g:lua_inspect_events' option ~
 
 By default semantic highlighting is automatically enabled after a short
 timeout and when you save a buffer. If you want to disable automatic
@@ -107,16 +124,17 @@ highlighting altogether add the following to your |vimrc| script:
 >
     :let g:lua_inspect_events = ''
 
-You can also add events, for example if you also want to run |:LuaInspect| the
+You can also add events, for example if you also want to run ':LuaInspect' the
 moment you edit a Lua file then try this:
 >
     :let g:lua_inspect_events = 'CursorHold,CursorHoldI,BufReadPost,BufWritePost'
 
 Note that this only works when the plug-in is loaded (or reloaded) after
-setting the |g:lua_inspect_events| option.
+setting the 'g:lua_inspect_events' option.
 
 ------------------------------------------------------------------------------
-The *g:lua_inspect_internal* option
+                                      *luainspect-g:lua_inspect_internal-option*
+The 'g:lua_inspect_internal' option ~
 
 The plug-in uses the Lua interface for Vim when available so that it doesn't
 have to run LuaInspect as an external program (which can slow things down). If
@@ -126,20 +144,23 @@ variable to false (0) in your |vimrc| script:
     :let g:lua_inspect_internal = 0
 
 ==============================================================================
+                                                            *luainspect-contact*
 Contact ~
 
 If you have questions, bug reports, suggestions, etc. the author can be
 contacted at peter@peterodding.com. The latest version is available at
 http://peterodding.com/code/vim/lua-inspect/ and http://github.com/xolox/vim-lua-inspect.
-If you like this plug-in please vote for it on www.vim.org [9].
+If you like this plug-in please vote for it on Vim Online [9].
 
 ==============================================================================
+                                                            *luainspect-license*
 License ~
 
-This software is licensed under the MIT license [10].
-© 2010 Peter Odding <peter@peterodding.com>.
+This software is licensed under the MIT license [10]. Copyright 2010 Peter
+Odding <peter@peterodding.com>.
 
 ==============================================================================
+                                                         *luainspect-references*
 References ~
 
 [1] http://lua-users.org/wiki/LuaInspect
@@ -147,10 +168,10 @@ References ~
 [3] http://www.gnu.org/software/emacs/
 [4] http://www.scintilla.org/SciTE.html
 [5] http://peterodding.com/code/vim/luainspect/screenshot.png
-[6] http://peterodding.com/code/vim/downloads/lua-inspect
+[6] http://peterodding.com/code/vim/downloads/lua-inspect.zip
 [7] http://peterodding.com/code/vim/shell/
 [8] http://en.wikipedia.org/wiki/Dynamic-link_library
 [9] http://www.vim.org/scripts/script.php?script_id=3169
 [10] http://en.wikipedia.org/wiki/MIT_License
 
-vim: syntax=help nospell
+vim: ft=help

@@ -1,8 +1,8 @@
 " Vim plug-in
 " Author: Peter Odding <peter@peterodding.com>
-" Last Change: October 9, 2010
+" Last Change: May 25, 2011
 " URL: http://peterodding.com/code/vim/lua-inspect/
-" Version: 0.4.7
+" Version: 0.4.10
 " License: MIT
 
 " Support for automatic update using the GLVS plug-in.
@@ -25,11 +25,7 @@ endif
 
 if !exists('g:lua_inspect_path')
   " Change this if you want to move the Lua modules somewhere else.
-  if has('win32') || has('win64')
-    let g:lua_inspect_path = '~\vimfiles\misc\luainspect'
-  else
-    let g:lua_inspect_path = '~/.vim/misc/luainspect'
-  endif
+  let g:lua_inspect_path = expand('<sfile>:p:h') . '/../misc/luainspect'
 endif
 
 if !exists('g:lua_inspect_internal')
@@ -43,16 +39,16 @@ if !exists('g:lua_inspect_internal')
 endif
 
 " This command updates highlighting when automatic highlighting is disabled.
-command! -bar -bang LuaInspect call luainspect#highlight_cmd(<q-bang> == '!')
+command! -bar -bang LuaInspect call xolox#luainspect#highlight_cmd(<q-bang> == '!')
 
 " Automatically enable the plug-in in Lua buffers.
 augroup PluginLuaInspect
-  autocmd! FileType lua call luainspect#auto_enable()
+  autocmd! FileType lua call xolox#luainspect#auto_enable()
 augroup END
 
 " The &balloonexpr option requires a global function.
 function! LuaInspectToolTip()
-  let result = luainspect#make_request('tooltip')
+  let result = xolox#luainspect#make_request('tooltip')
   if exists('b:luainspect_syntax_error')
     return b:luainspect_syntax_error
   else
